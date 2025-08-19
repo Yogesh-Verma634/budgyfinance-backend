@@ -11,20 +11,33 @@ const app = express();
 
 // Initialize Firebase Admin
 try {
-  // For local development, use service account file
-  // For production, Heroku will use environment variables
+  let credential;
+  
   if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-    admin.initializeApp({
-      credential: admin.credential.applicationDefault(),
-    });
+    try {
+      // Try to parse as JSON content first (for Render)
+      const serviceAccount = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+      credential = admin.credential.cert(serviceAccount);
+      console.log('✅ Using Firebase service account from JSON content');
+    } catch (parseError) {
+      // If JSON parsing fails, treat as file path (for local development)
+      credential = admin.credential.applicationDefault();
+      console.log('✅ Using Firebase service account from file path');
+    }
   } else {
-    // Fallback for development
-    console.log('⚠️  Using default Firebase credentials. Set GOOGLE_APPLICATION_CREDENTIALS for production.');
-    admin.initializeApp();
+    // Fallback - try with minimal config
+    console.log('⚠️  No Firebase credentials provided. Using minimal config.');
+    credential = admin.credential.applicationDefault();
   }
-  console.log('✅ Firebase Admin initialized');
+  
+  admin.initializeApp({
+    credential: credential,
+  });
+  
+  console.log('✅ Firebase Admin initialized successfully');
 } catch (error) {
   console.error('❌ Firebase Admin initialization failed:', error.message);
+  // Don't crash the server, just log the error
 }
 
 // Middleware
