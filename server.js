@@ -377,6 +377,151 @@ function generateItemId() {
   return 'item_' + Math.random().toString(36).substr(2, 9);
 }
 
+// 🤖 AI Assistant endpoint
+app.post('/api/ai-assistant', verifyToken, async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    const { prompt, apiKey } = req.body;
+    const userId = req.user.uid;
+    
+    console.log(`🧠 AI Assistant request for user: ${userId.substring(0, 8)}...`);
+    
+    // Validate request
+    if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
+      return res.status(400).json({ 
+        error: 'No prompt provided for AI analysis',
+        code: 'INVALID_PROMPT'
+      });
+    }
+    
+    if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length === 0) {
+      return res.status(400).json({ 
+        error: 'No API key provided',
+        code: 'MISSING_API_KEY'
+      });
+    }
+    
+    // Check user quota for AI requests
+    const quotaInfo = await getUserQuotaInfo(userId);
+    if (!quotaInfo.hasQuota) {
+      return res.status(429).json({ 
+        error: 'AI Assistant quota exceeded. Please upgrade your plan.',
+        code: 'QUOTA_EXCEEDED',
+        quotaInfo
+      });
+    }
+    
+    // Process with OpenAI
+    const aiResponse = await processAIQuestion(prompt, apiKey);
+    
+    // Track usage
+    await trackAIUsage(userId, prompt.length);
+    
+    const processingTime = Date.now() - startTime;
+    console.log(`✅ AI Assistant response generated for user: ${userId.substring(0, 8)}... in ${processingTime}ms`);
+    
+    res.json({ 
+      response: aiResponse,
+      processingTime,
+      quotaInfo: await getUserQuotaInfo(userId) // Return updated quota info
+    });
+    
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    console.error('❌ Error in AI Assistant:', error.message);
+    
+    // Log error for debugging
+    await logError(req.user?.uid, error, processingTime);
+    
+    res.status(500).json({ 
+      error: 'Failed to process AI request',
+      code: 'AI_PROCESSING_ERROR',
+      details: error.message,
+      processingTime
+    });
+  }
+});
+
+// 🧠 Process AI questions with OpenAI
+async function processAIQuestion(prompt, apiKey) {
+  const OPENAI_API_KEY = apiKey;
+  
+  if (!OPENAI_API_KEY) {
+    throw new Error('OpenAI API key not provided');
+  }
+  
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-3.5-turbo',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are an intelligent financial assistant helping users understand their spending patterns. Be helpful, accurate, and conversational. Always provide specific numbers and insights based on the data provided.'
+        },
+        {
+          role: 'user',
+          content: prompt
+        }
+      ],
+      max_tokens: 1000,
+      temperature: 0.7
+    })
+  });
+  
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(`OpenAI API error: ${errorData.error?.message || 'Unknown error'}`);
+  }
+  
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content;
+  
+  if (!content) {
+    throw new Error('No response content from OpenAI');
+  }
+  
+  return content;
+}
+
+// 📊 Track AI usage
+async function trackAIUsage(userId, promptLength) {
+  try {
+    const usage = {
+      userId,
+      timestamp: new Date(),
+      promptLength,
+      service: 'ai-assistant',
+      estimatedCost: (promptLength / 1000) * 0.002 // Rough estimate
+    };
+    
+    await admin.firestore()
+      .collection('ai-usage')
+      .add(usage);
+      
+    // Update user's monthly AI usage counter
+    const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM format
+    const userRef = admin.firestore().collection('users').doc(userId);
+    
+    await userRef.set({
+      aiUsage: {
+        [currentMonth]: admin.firestore.FieldValue.increment(1),
+        lastUsed: new Date(),
+        totalAIRequests: admin.firestore.FieldValue.increment(1)
+      }
+    }, { merge: true });
+    
+  } catch (error) {
+    console.error('Error tracking AI usage:', error);
+    // Don't fail the request if usage tracking fails
+  }
+}
+
 // 📊 Additional endpoints
 app.get('/api/user/quota', verifyToken, async (req, res) => {
   try {
@@ -407,7 +552,8 @@ app.get('/', (req, res) => {
     endpoints: {
       health: '/health',
       processReceipt: 'POST /api/process-receipt',
-      userQuota: 'GET /api/user/quota'
+      userQuota: 'GET /api/user/quota',
+      aiAssistant: 'POST /api/ai-assistant'
     }
   });
 });
@@ -434,6 +580,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🌐 BudgyFinance Backend running on port ${PORT}`);
   console.log(`📋 Process receipt: POST /api/process-receipt`);
+  console.log(`🧠 AI Assistant: POST /api/ai-assistant`);
   console.log(`📊 User quota: GET /api/user/quota`);
   console.log(`💚 Health check: GET /health`);
   console.log(`🔑 Environment: ${process.env.NODE_ENV || 'development'}`);
