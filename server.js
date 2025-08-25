@@ -9,6 +9,9 @@ const fetch = require('node-fetch');
 
 const app = express();
 
+// Trust proxy for proper IP detection behind load balancers (Render, Heroku, etc.)
+app.set('trust proxy', 1);
+
 // Initialize Firebase Admin
 try {
   let credential;
@@ -51,13 +54,21 @@ app.use(express.json({ limit: '10mb' }));
 // Rate limiting - 50 requests per 15 minutes per IP
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 50,
+  max: 50, // limit each IP to 50 requests per windowMs
   message: {
     error: 'Too many requests from this IP, please try again later.',
     retryAfter: '15 minutes'
   },
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req) => {
+    // Use user ID if authenticated, otherwise fall back to IP
+    return req.user?.uid || req.ip;
+  },
+  skip: (req) => {
+    // Skip rate limiting for health checks
+    return req.path === '/health' || req.path === '/';
+  }
 });
 
 app.use('/api/', limiter);
