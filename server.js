@@ -421,6 +421,8 @@ app.post('/api/ai-assistant', verifyToken, async (req, res) => {
     const userId = req.user.uid;
     
     console.log(`🧠 AI Assistant request for user: ${userId.substring(0, 8)}...`);
+    console.log(`📝 Received prompt: ${prompt.substring(0, 200)}...`);
+    console.log(`📊 Prompt length: ${prompt.length} characters`);
     
     // Validate request
     if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
@@ -486,6 +488,8 @@ async function processAIQuestion(prompt) {
   }
   
   console.log('🔑 Using OpenAI API key from environment variables');
+  console.log(`📤 Sending to OpenAI - Prompt preview: ${prompt.substring(0, 300)}...`);
+  console.log(`📊 Full prompt length: ${prompt.length} characters`);
   
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -498,7 +502,19 @@ async function processAIQuestion(prompt) {
       messages: [
         {
           role: 'system',
-          content: 'You are an intelligent financial assistant helping users understand their spending patterns. Be helpful, accurate, and conversational. Always provide specific numbers and insights based on the data provided.'
+          content: `You are an intelligent financial assistant helping users understand their spending patterns. 
+
+IMPORTANT: You will receive spending summary data, NOT individual receipt details. 
+
+Your role:
+1. Analyze the spending summary data provided
+2. Provide specific insights based on the numbers given
+3. Give actionable financial advice
+4. Be conversational and helpful
+5. Use the exact numbers from the summary
+6. Don't make up or estimate numbers you don't have
+
+If the user asks about specific details not in the summary, politely explain what information you have available and suggest they ask about spending patterns, categories, or totals instead.`
         },
         {
           role: 'user',
@@ -611,7 +627,7 @@ app.use('*', (req, res) => {
   });
 });
 
-// 🚀 Start server
+// �� Start server
 const PORT = process.env.PORT || 3000;
 
 // Check required environment variables
