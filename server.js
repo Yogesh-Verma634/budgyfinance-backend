@@ -51,10 +51,11 @@ app.use(cors({
 
 app.use(express.json({ limit: '10mb' }));
 
-// Rate limiting - 50 requests per 15 minutes per IP
+// Rate limiting - 1000 requests per 15 minutes per IP (very generous for testing)
+// TODO: Tighten these limits before production release
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 50, // limit each IP to 50 requests per windowMs
+  max: 1000, // limit each IP to 1000 requests per windowMs (very generous for testing)
   message: {
     error: 'Too many requests from this IP, please try again later.',
     retryAfter: '15 minutes'
@@ -310,27 +311,50 @@ async function checkUserQuota(userId) {
 
 async function getUserQuotaInfo(userId) {
   try {
-    const userDoc = await admin.firestore()
-      .collection('users')
-      .doc(userId)
-      .get();
-      
-    const userData = userDoc.data() || {};
-    const subscription = userData.subscription || {};
-    const usage = userData.usage || {};
+    const userRef = admin.firestore().collection('users').doc(userId);
+    const userDoc = await userRef.get();
     
-    const currentMonth = new Date().toISOString().slice(0, 7);
-    const monthlyUsage = usage[currentMonth] || 0;
+    if (!userDoc.exists) {
+      // Create new user with generous testing limits
+      const newUser = {
+        uid: userId,
+        isPremium: false,
+        monthlyAIUsage: 0,
+        monthlyAILimit: 1000, // TODO: Tighten to 10 before production release
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastAIUsage: null
+      };
+      await userRef.set(newUser);
+      return newUser;
+    }
+    
+    const userData = userDoc.data();
+    const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM format
+    
+    // Reset monthly usage if it's a new month
+    if (userData.lastAIUsage && !userData.lastAIUsage.toDate().toISOString().startsWith(currentMonth)) {
+      await userRef.update({
+        monthlyAIUsage: 0,
+        lastAIUsage: admin.firestore.FieldValue.serverTimestamp()
+      });
+      userData.monthlyAIUsage = 0;
+    }
     
     return {
-      isPremium: subscription.status === 'active',
-      monthlyUsage: monthlyUsage,
-      monthlyLimit: subscription.status === 'active' ? null : 10,
-      remainingFree: subscription.status === 'active' ? null : Math.max(0, 10 - monthlyUsage)
+      isPremium: userData.isPremium || false,
+      monthlyUsage: userData.monthlyAIUsage || 0,
+      monthlyLimit: userData.monthlyAILimit || 1000, // TODO: Tighten to 10 before production release
+      remainingFree: Math.max(0, (userData.monthlyAILimit || 1000) - (userData.monthlyAIUsage || 0))
     };
   } catch (error) {
-    console.error('Error getting quota info:', error);
-    return { isPremium: false, monthlyUsage: 0, monthlyLimit: 10, remainingFree: 10 };
+    console.error('Error getting user quota info:', error);
+    // Return generous fallback limits for testing
+    return {
+      isPremium: false,
+      monthlyUsage: 0,
+      monthlyLimit: 1000, // TODO: Tighten to 10 before production release
+      remainingFree: 1000
+    };
   }
 }
 
@@ -408,11 +432,11 @@ app.post('/api/ai-assistant', verifyToken, async (req, res) => {
     
     // Check user quota for AI requests
     const quotaInfo = await getUserQuotaInfo(userId);
-    if (!quotaInfo.hasQuota) {
+    if (quotaInfo.remainingFree <= 0) {
       return res.status(429).json({ 
         error: 'AI Assistant quota exceeded. Please upgrade your plan.',
         code: 'QUOTA_EXCEEDED',
-        quotaInfo
+        quotaInfo: quotaInfo
       });
     }
     
