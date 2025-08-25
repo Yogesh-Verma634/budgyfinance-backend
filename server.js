@@ -382,7 +382,7 @@ app.post('/api/ai-assistant', verifyToken, async (req, res) => {
   const startTime = Date.now();
   
   try {
-    const { prompt, apiKey } = req.body;
+    const { prompt } = req.body;
     const userId = req.user.uid;
     
     console.log(`🧠 AI Assistant request for user: ${userId.substring(0, 8)}...`);
@@ -392,13 +392,6 @@ app.post('/api/ai-assistant', verifyToken, async (req, res) => {
       return res.status(400).json({ 
         error: 'No prompt provided for AI analysis',
         code: 'INVALID_PROMPT'
-      });
-    }
-    
-    if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length === 0) {
-      return res.status(400).json({ 
-        error: 'No API key provided',
-        code: 'MISSING_API_KEY'
       });
     }
     
@@ -412,8 +405,8 @@ app.post('/api/ai-assistant', verifyToken, async (req, res) => {
       });
     }
     
-    // Process with OpenAI
-    const aiResponse = await processAIQuestion(prompt, apiKey);
+    // Process with OpenAI using backend's API key
+    const aiResponse = await processAIQuestion(prompt);
     
     // Track usage
     await trackAIUsage(userId, prompt.length);
@@ -444,12 +437,20 @@ app.post('/api/ai-assistant', verifyToken, async (req, res) => {
 });
 
 // 🧠 Process AI questions with OpenAI
-async function processAIQuestion(prompt, apiKey) {
-  const OPENAI_API_KEY = apiKey;
+async function processAIQuestion(prompt) {
+  const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
   
   if (!OPENAI_API_KEY) {
-    throw new Error('OpenAI API key not provided');
+    console.error('❌ OpenAI API key not configured in environment variables');
+    throw new Error('OpenAI API key not configured in environment variables');
   }
+  
+  if (!OPENAI_API_KEY.startsWith('sk-')) {
+    console.error('❌ Invalid OpenAI API key format');
+    throw new Error('Invalid OpenAI API key format');
+  }
+  
+  console.log('🔑 Using OpenAI API key from environment variables');
   
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -577,6 +578,15 @@ app.use('*', (req, res) => {
 
 // 🚀 Start server
 const PORT = process.env.PORT || 3000;
+
+// Check required environment variables
+if (!process.env.OPENAI_API_KEY) {
+  console.error('❌ OPENAI_API_KEY environment variable is required for AI Assistant functionality');
+  console.warn('⚠️  AI Assistant endpoint will not work without this configuration');
+} else {
+  console.log('✅ OpenAI API key configured for AI Assistant');
+}
+
 app.listen(PORT, () => {
   console.log(`🌐 BudgyFinance Backend running on port ${PORT}`);
   console.log(`📋 Process receipt: POST /api/process-receipt`);
