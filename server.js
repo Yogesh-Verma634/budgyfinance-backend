@@ -185,6 +185,27 @@ async function processWithOpenAI(extractedText) {
 
 Use these categories only: Food & Dining, Groceries, Transportation, Entertainment, Shopping, Health & Fitness, Travel, Bills & Utilities, Other
 
+IMPORTANT PRICING RULES FOR WEIGHT-BASED ITEMS:
+- For weight-based items (e.g., "$2.99/lb", "$1.50/oz", "$5.00/kg", "$3.49 per lb"):
+  * "price" MUST be the PER-UNIT RATE (e.g., 2.99 for "$2.99/lb", 1.50 for "$1.50/oz")
+  * "quantity" MUST be the ACTUAL WEIGHT PURCHASED as a decimal (e.g., 0.3 for "0.3 lb", 1.2 for "1.2 lb", 0.56 for "0.56 lb")
+  * quantity MUST be a decimal number when partial weights are purchased (NOT rounded to 1.0)
+  * The total for that item = price × quantity (e.g., 2.99 × 0.3 = 0.897)
+  
+- For regular items (no weight unit shown):
+  * "price" should be the unit price or total price for that item
+  * "quantity" should be the number of units (can be 1.0, 2.0, 3.0, etc.)
+  
+- Always extract the per-unit rate, NOT the total price, when weight units are present
+- Look for weight indicators: /lb, /oz, /kg, /g, per lb, per oz, etc.
+- Examples:
+  * "TOMATOES $2.99/lb 0.3 lb $0.90" → price: 2.99, quantity: 0.3
+  * "BANANAS $1.50/lb 1.2 lb $1.80" → price: 1.50, quantity: 1.2
+  * "DESI CUCUMBER $1.67/lb 0.56 lb $0.94" → price: 1.67, quantity: 0.56
+  * "MILK $3.99" → price: 3.99, quantity: 1.0
+  * "APPLES $2.00 3" → price: 2.00, quantity: 3.0
+  * "ORGANIC GINGER $0.09/oz 0.03 oz $0.003" → price: 0.09, quantity: 0.03
+
 Receipt text:
 ${extractedText}
 
