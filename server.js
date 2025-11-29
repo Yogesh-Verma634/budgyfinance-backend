@@ -51,11 +51,10 @@ app.use(cors({
 
 app.use(express.json({ limit: '10mb' }));
 
-// Rate limiting - 1000 requests per 15 minutes per IP (very generous for testing)
-// TODO: Tighten these limits before production release
+// Rate limiting - Very generous limits for unlimited scanning
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // limit each IP to 1000 requests per windowMs (very generous for testing)
+  max: 10000, // Very generous limit for unlimited scanning
   message: {
     error: 'Too many requests from this IP, please try again later.',
     retryAfter: '15 minutes'
@@ -123,30 +122,20 @@ app.post('/api/process-receipt', verifyToken, async (req, res) => {
       });
     }
     
-    // Check user quota
-    const hasQuota = await checkUserQuota(userId);
-    if (!hasQuota.allowed) {
-      return res.status(429).json({ 
-        error: hasQuota.message,
-        code: 'QUOTA_EXCEEDED',
-        upgradeRequired: true
-      });
-    }
+    // Quota checking removed - unlimited scanning enabled
     
     // Process with OpenAI
     const receipt = await processWithOpenAI(extractedText);
     
-    // Track usage
+    // Usage tracking removed - unlimited scanning enabled
     const processingTime = Date.now() - startTime;
-    await trackUsage(userId, extractedText.length, processingTime);
     
     console.log(`✅ Receipt processed successfully for user: ${userId.substring(0, 8)}... (${processingTime}ms)`);
     
     res.json({
       success: true,
       receipt: receipt,
-      processingTime: processingTime,
-      quota: await getUserQuotaInfo(userId)
+      processingTime: processingTime
     });
     
   } catch (error) {
@@ -156,17 +145,8 @@ app.post('/api/process-receipt', verifyToken, async (req, res) => {
     // Log error for debugging
     await logError(req.user?.uid, error, processingTime);
     
-    if (error.message.includes('OpenAI API key')) {
-      res.status(500).json({ 
-        error: 'Service configuration error. Please try again later.',
-        code: 'SERVICE_CONFIG_ERROR'
-      });
-    } else if (error.message.includes('quota')) {
-      res.status(429).json({ 
-        error: 'API quota exceeded. Please try again later.',
-        code: 'API_QUOTA_EXCEEDED'
-      });
-    } else {
+    // Quota error handling removed - unlimited scanning enabled
+    {
       res.status(500).json({ 
         error: 'Failed to process receipt. Please try again.',
         code: 'PROCESSING_FAILED',
@@ -268,126 +248,9 @@ Return only the JSON object, no other text.`;
   }
 }
 
-// 💰 Business Logic
-async function checkUserQuota(userId) {
-  try {
-    const userDoc = await admin.firestore()
-      .collection('users')
-      .doc(userId)
-      .get();
-      
-    const userData = userDoc.data() || {};
-    const subscription = userData.subscription || {};
-    const usage = userData.usage || {};
-    
-    // Check if user has active subscription
-    if (subscription.status === 'active' && subscription.expiresAt > new Date()) {
-      return { allowed: true, message: 'Premium subscription active' };
-    }
-    
-    // Free tier limits
-    const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
-    const monthlyUsage = usage[currentMonth] || 0;
-    const freeLimit = 10;
-    
-    if (monthlyUsage >= freeLimit) {
-      return { 
-        allowed: false, 
-        message: `Free tier limit reached (${freeLimit} receipts/month). Upgrade to continue processing.`
-      };
-    }
-    
-    return { 
-      allowed: true, 
-      message: `Free tier: ${monthlyUsage}/${freeLimit} receipts used this month` 
-    };
-    
-  } catch (error) {
-    console.error('Error checking user quota:', error);
-    // Allow processing if we can't check quota (fail open)
-    return { allowed: true, message: 'Quota check unavailable' };
-  }
-}
+// 💰 Business Logic - Quota functions removed for unlimited scanning
 
-async function getUserQuotaInfo(userId) {
-  try {
-    const userRef = admin.firestore().collection('users').doc(userId);
-    const userDoc = await userRef.get();
-    
-    if (!userDoc.exists) {
-      // Create new user with generous testing limits
-      const newUser = {
-        uid: userId,
-        isPremium: false,
-        monthlyAIUsage: 0,
-        monthlyAILimit: 1000, // TODO: Tighten to 10 before production release
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        lastAIUsage: null
-      };
-      await userRef.set(newUser);
-      return newUser;
-    }
-    
-    const userData = userDoc.data();
-    const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM format
-    
-    // Reset monthly usage if it's a new month
-    if (userData.lastAIUsage && !userData.lastAIUsage.toDate().toISOString().startsWith(currentMonth)) {
-      await userRef.update({
-        monthlyAIUsage: 0,
-        lastAIUsage: admin.firestore.FieldValue.serverTimestamp()
-      });
-      userData.monthlyAIUsage = 0;
-    }
-    
-    return {
-      isPremium: userData.isPremium || false,
-      monthlyUsage: userData.monthlyAIUsage || 0,
-      monthlyLimit: userData.monthlyAILimit || 1000, // TODO: Tighten to 10 before production release
-      remainingFree: Math.max(0, (userData.monthlyAILimit || 1000) - (userData.monthlyAIUsage || 0))
-    };
-  } catch (error) {
-    console.error('Error getting user quota info:', error);
-    // Return generous fallback limits for testing
-    return {
-      isPremium: false,
-      monthlyUsage: 0,
-      monthlyLimit: 1000, // TODO: Tighten to 10 before production release
-      remainingFree: 1000
-    };
-  }
-}
-
-async function trackUsage(userId, textLength, processingTime) {
-  try {
-    const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
-    const estimatedCost = (textLength / 1000) * 0.002; // Rough OpenAI cost estimate
-    
-    // Log individual usage
-    await admin.firestore().collection('usage_logs').add({
-      userId,
-      timestamp: new Date(),
-      textLength,
-      processingTime,
-      estimatedCost,
-      month: currentMonth
-    });
-    
-    // Update user's monthly usage counter
-    const userRef = admin.firestore().collection('users').doc(userId);
-    await userRef.set({
-      usage: {
-        [currentMonth]: admin.firestore.FieldValue.increment(1),
-        lastUsed: new Date(),
-        totalProcessed: admin.firestore.FieldValue.increment(1)
-      }
-    }, { merge: true });
-    
-  } catch (error) {
-    console.error('Error tracking usage:', error);
-    // Don't fail the request if usage tracking fails
-  }
-}
+// trackUsage function removed - unlimited scanning enabled
 
 async function logError(userId, error, processingTime) {
   try {
@@ -412,177 +275,7 @@ function generateItemId() {
   return 'item_' + Math.random().toString(36).substr(2, 9);
 }
 
-// 🤖 AI Assistant endpoint
-app.post('/api/ai-assistant', verifyToken, async (req, res) => {
-  const startTime = Date.now();
-  
-  try {
-    const { prompt } = req.body;
-    const userId = req.user.uid;
-    
-    console.log(`🧠 AI Assistant request for user: ${userId.substring(0, 8)}...`);
-    console.log(`📝 Received prompt: ${prompt.substring(0, 200)}...`);
-    console.log(`📊 Prompt length: ${prompt.length} characters`);
-    
-    // Validate request
-    if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
-      return res.status(400).json({ 
-        error: 'No prompt provided for AI analysis',
-        code: 'INVALID_PROMPT'
-      });
-    }
-    
-    // Check user quota for AI requests
-    const quotaInfo = await getUserQuotaInfo(userId);
-    if (quotaInfo.remainingFree <= 0) {
-      return res.status(429).json({ 
-        error: 'AI Assistant quota exceeded. Please upgrade your plan.',
-        code: 'QUOTA_EXCEEDED',
-        quotaInfo: quotaInfo
-      });
-    }
-    
-    // Process with OpenAI using backend's API key
-    const aiResponse = await processAIQuestion(prompt);
-    
-    // Track usage
-    await trackAIUsage(userId, prompt.length);
-    
-    const processingTime = Date.now() - startTime;
-    console.log(`✅ AI Assistant response generated for user: ${userId.substring(0, 8)}... in ${processingTime}ms`);
-    
-    res.json({ 
-      response: aiResponse,
-      processingTime,
-      quotaInfo: await getUserQuotaInfo(userId) // Return updated quota info
-    });
-    
-  } catch (error) {
-    const processingTime = Date.now() - startTime;
-    console.error('❌ Error in AI Assistant:', error.message);
-    
-    // Log error for debugging
-    await logError(req.user?.uid, error, processingTime);
-    
-    res.status(500).json({ 
-      error: 'Failed to process AI request',
-      code: 'AI_PROCESSING_ERROR',
-      details: error.message,
-      processingTime
-    });
-  }
-});
-
-// 🧠 Process AI questions with OpenAI
-async function processAIQuestion(prompt) {
-  const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-  
-  if (!OPENAI_API_KEY) {
-    console.error('❌ OpenAI API key not configured in environment variables');
-    throw new Error('OpenAI API key not configured in environment variables');
-  }
-  
-  if (!OPENAI_API_KEY.startsWith('sk-')) {
-    console.error('❌ Invalid OpenAI API key format');
-    throw new Error('Invalid OpenAI API key format');
-  }
-  
-  console.log('🔑 Using OpenAI API key from environment variables');
-  console.log(`📤 Sending to OpenAI - Prompt preview: ${prompt.substring(0, 300)}...`);
-  console.log(`📊 Full prompt length: ${prompt.length} characters`);
-  
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${OPENAI_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: 'gpt-3.5-turbo',
-      messages: [
-        {
-          role: 'system',
-          content: `You are an intelligent financial assistant helping users understand their spending patterns. 
-
-IMPORTANT: You will receive spending summary data, NOT individual receipt details. 
-
-Your role:
-1. Analyze the spending summary data provided
-2. Provide specific insights based on the numbers given
-3. Give actionable financial advice
-4. Be conversational and helpful
-5. Use the exact numbers from the summary
-6. Don't make up or estimate numbers you don't have
-
-If the user asks about specific details not in the summary, politely explain what information you have available and suggest they ask about spending patterns, categories, or totals instead.`
-        },
-        {
-          role: 'user',
-          content: prompt
-        }
-      ],
-      max_tokens: 1000,
-      temperature: 0.7
-    })
-  });
-  
-  if (!response.ok) {
-    const errorData = await response.json();
-    throw new Error(`OpenAI API error: ${errorData.error?.message || 'Unknown error'}`);
-  }
-  
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content;
-  
-  if (!content) {
-    throw new Error('No response content from OpenAI');
-  }
-  
-  return content;
-}
-
-// 📊 Track AI usage
-async function trackAIUsage(userId, promptLength) {
-  try {
-    const usage = {
-      userId,
-      timestamp: new Date(),
-      promptLength,
-      service: 'ai-assistant',
-      estimatedCost: (promptLength / 1000) * 0.002 // Rough estimate
-    };
-    
-    await admin.firestore()
-      .collection('ai-usage')
-      .add(usage);
-      
-    // Update user's monthly AI usage counter
-    const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM format
-    const userRef = admin.firestore().collection('users').doc(userId);
-    
-    await userRef.set({
-      aiUsage: {
-        [currentMonth]: admin.firestore.FieldValue.increment(1),
-        lastUsed: new Date(),
-        totalAIRequests: admin.firestore.FieldValue.increment(1)
-      }
-    }, { merge: true });
-    
-  } catch (error) {
-    console.error('Error tracking AI usage:', error);
-    // Don't fail the request if usage tracking fails
-  }
-}
-
-// 📊 Additional endpoints
-app.get('/api/user/quota', verifyToken, async (req, res) => {
-  try {
-    const quotaInfo = await getUserQuotaInfo(req.user.uid);
-    res.json(quotaInfo);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get quota information' });
-  }
-});
+// 📊 Additional endpoints - Quota endpoint removed for unlimited scanning
 
 // 📊 Health check endpoint
 app.get('/health', (req, res) => {
@@ -601,14 +294,130 @@ app.get('/', (req, res) => {
     service: 'BudgyFinance Backend',
     version: '1.0.0',
     status: 'running',
+    features: {
+      unlimitedScanning: true,
+      aiAssistant: true
+    },
     endpoints: {
       health: '/health',
       processReceipt: 'POST /api/process-receipt',
-      userQuota: 'GET /api/user/quota',
-      aiAssistant: 'POST /api/ai-assistant'
+      llamaAssistant: 'POST /api/llama-assistant',
     }
   });
 });
+
+// 🤖 LLaMA 3 AI Assistant endpoint (Lightweight for Render)
+app.post('/api/llama-assistant', verifyToken, async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    const { prompt, model = 'llama3:1b' } = req.body; // Use 1B model by default
+    const userId = req.user.uid;
+    
+    console.log(`🧠 LLaMA 3 1B AI Assistant request for user: ${userId.substring(0, 8)}...`);
+    console.log(`📝 Received prompt: ${prompt.substring(0, 200)}...`);
+    console.log(`📊 Prompt length: ${prompt.length} characters`);
+    console.log(`🤖 Model requested: ${model}`);
+    
+    // Validate request
+    if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
+      return res.status(400).json({ 
+        error: 'No prompt provided for AI analysis',
+        code: 'INVALID_PROMPT'
+      });
+    }
+    
+    // Check prompt length for memory optimization
+    if (prompt.length > 2000) {
+      return res.status(400).json({
+        error: 'Prompt too long for memory-constrained environment',
+        code: 'PROMPT_TOO_LONG',
+        maxLength: 2000
+      });
+    }
+    
+    // Process with LLaMA 3 1B
+    const aiResponse = await processWithLLaMA(prompt, model);
+    
+    const processingTime = Date.now() - startTime;
+    console.log(`✅ LLaMA 3 1B AI Assistant response generated for user: ${userId.substring(0, 8)}... in ${processingTime}ms`);
+    
+    res.json({ 
+      response: aiResponse,
+      processingTime,
+      model: model,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    const processingTime = Date.now() - startTime;
+    console.error('❌ Error in LLaMA 3 1B AI Assistant:', error.message);
+    
+    // Log error for debugging
+    await logError(req.user?.uid, error, processingTime);
+    
+    res.status(500).json({ 
+      error: 'Failed to process AI request',
+      code: 'LLAMA_PROCESSING_ERROR',
+      details: error.message,
+      processingTime
+    });
+  }
+});
+
+// 🧠 Process AI questions with LLaMA 3 1B (Memory-optimized for Render)
+async function processWithLLaMA(prompt, model) {
+  const LLAMA_SERVER_URL = process.env.LLAMA_SERVER_URL;
+  
+  if (!LLAMA_SERVER_URL) {
+    console.error('❌ LLaMA server URL not configured in environment variables');
+    throw new Error('LLaMA server URL not configured in environment variables');
+  }
+  
+  console.log('🔑 Using LLaMA server from environment variables');
+  console.log(`📤 Sending to LLaMA server - Prompt preview: ${prompt.substring(0, 300)}...`);
+  console.log(`📊 Full prompt length: ${prompt.length} characters`);
+  console.log(`🌐 LLaMA Server URL: ${LLAMA_SERVER_URL}`);
+  console.log(`🤖 Model: ${model}`);
+  
+  // Memory-optimized request for Render compatibility
+  const requestBody = {
+    prompt: prompt,
+    model: model,
+    max_tokens: 500, // Reduced for memory efficiency
+    temperature: 0.7,
+    stream: false,
+    // Memory optimization parameters
+    num_ctx: 1024, // Reduced context window
+    num_thread: 2, // Reduced thread count
+    num_gpu: 0, // CPU only for Render
+    repeat_penalty: 1.1
+  };
+  
+  console.log('📤 Memory-optimized request body:', requestBody);
+  
+  const response = await fetch(`${LLAMA_SERVER_URL}/api/chat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(requestBody)
+  });
+  
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(`LLaMA server error: ${errorData.error || response.statusText}`);
+  }
+  
+  const data = await response.json();
+  const content = data.response || data.content;
+  
+  if (!content) {
+    throw new Error('No response content from LLaMA server');
+  }
+  
+  return content;
+}
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -627,24 +436,22 @@ app.use('*', (req, res) => {
   });
 });
 
-// �� Start server
+// 🚀 Start server
 const PORT = process.env.PORT || 3000;
-
-// Check required environment variables
-if (!process.env.OPENAI_API_KEY) {
-  console.error('❌ OPENAI_API_KEY environment variable is required for AI Assistant functionality');
-  console.warn('⚠️  AI Assistant endpoint will not work without this configuration');
-} else {
-  console.log('✅ OpenAI API key configured for AI Assistant');
-}
-
 app.listen(PORT, () => {
-  console.log(`🌐 BudgyFinance Backend running on port ${PORT}`);
-  console.log(`📋 Process receipt: POST /api/process-receipt`);
-  console.log(`🧠 AI Assistant: POST /api/ai-assistant`);
-  console.log(`📊 User quota: GET /api/user/quota`);
+  console.log(`🚀 BudgyFinance Backend running on port ${PORT}`);
+  console.log(`📋 Process receipt: POST /api/process-receipt (UNLIMITED SCANNING)`);
+  console.log(`🧠 LLaMA 3 AI Assistant: POST /api/llama-assistant`);
   console.log(`💚 Health check: GET /health`);
   console.log(`🔑 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🎉 UNLIMITED SCANNING ENABLED - No quotas or limits!`);
+  
+  // Check LLaMA server configuration
+  if (process.env.LLAMA_SERVER_URL) {
+    console.log('✅ LLaMA server URL configured');
+  } else {
+    console.log('⚠️ LLaMA server URL not configured');
+  }
 });
 
 module.exports = app;
